@@ -1,3 +1,14 @@
+https://en.wikipedia.org/wiki/Split-flap_display
+
+https://drafts.csswg.org/css-easing-1/#typedef-easing-function
+
+https://matthewlein.com/tools/ceaser
+
+https://en.wikipedia.org/wiki/B%C3%A9zier_curve#Cubic_B%C3%A9zier_curves
+
+https://freesound.org/people/matucha/sounds/174056/
+
+
 Getting started with WebGL at a low-level is hard and in many cases you'd be better off with a [high-level](https://www.babylonjs.com/) [library](https://threejs.org/). However, I've found that having an understanding of the low-level API can be useful when trying to understand the trade-offs these libraries make and how to optimise your usage of them.
 
 This post introduces a quick reference guide to picking the right low-level draw call for those trying to decipher the difference between `drawArrays`, `drawElements` and their oddly-`ANGLE`'d instanced equivalents. It will not cover the detail of how to use these calls (e.g. setting up attributes, writing shaders, etc.), just an overview of the method calls themselves, what they're good for and how to go about picking between them.

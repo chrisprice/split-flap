@@ -1,95 +1,350 @@
-// web component
-// pre-style content
-// user-defined code points for sprites
-// sounds
-// offscreen canvas
-// rows / cols
-// alignment
+import { css } from './node_modules/@d3fc/d3fc-element/src/css.js';
+import vertices from './vertices.js';
+import vertexShader from './vertexShader.js';
+import fragmentShader from './fragmentShader.js';
+import textureUniform from './textureUniform.js';
 
-import splitFlap from './splitFlap.js';
-import sprites from './sprites.js';
+class SplitFlapElement extends HTMLElement {
 
-const spriteValues = Array.from({ length: 100 }).map((d, i) => String.fromCharCode(i > 96 ? 32 : 32 + i));
-// const spriteValues = ' ?abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'.split('');
-const spriteGenerator = sprites()
-    .canvas(document.createElement('canvas'));
-const spriteTexture = spriteGenerator(spriteValues);
-// document.body.append(spriteGenerator.canvas())
+    audioTrackSources = new Set();
 
-const spriteGridSize = 10;
-const spriteGridArea = spriteGridSize * spriteGridSize;
-const speed = 0.001;
-const rows = 24;
-const columns = 48;
+    spriteSheetUniform = textureUniform();
 
-const instance = splitFlap()
-    .texture2(spriteTexture)
-    .speed(speed);
+    spriteData = [];
 
-instance.data(('Lorem ipsum dolor sit amet, consectetur adipiscing elit. In et condimentum risus. Suspendisse potenti. Donec et aliquet orci, finibus faucibus justo. Cras efficitur nunc vitae ligula fermentum finibus. In at neque eget eros gravida varius. Fusce eget ipsum venenatis, iaculis turpis quis, commodo justo. Mauris eget orci consequat dolor finibus hendrerit at et libero. Suspendisse tristique, nunc at aliquet euismod, sem turpis tristique quam, non placerat tortor justo nec tortor. Morbi neque purus, placerat quis tellus a, ornare iaculis nulla. Sed vel augue scelerisque, faucibus sem nec, condimentum ipsum. Aenean velit lorem, varius quis lacinia sit amet, rhoncus quis metus. In felis justo, volutpat eu lorem ac, varius lobortis erat. Praesent vitae tempus purus. Nulla tempus egestas lacus id efficitur. Curabitur suscipit varius orci, at auctor eros tempus sed. Morbi lobortis justo quam, ac consequat arcu aliquam nec. Quisque elementum volutpat nunc, eget fringilla libero faucibus sed. Donec mattis elementum ante, eget efficitur tellus finibus nec. In hac habitasse platea dictumst. Aliquam quis lorem vel erat tempus accumsan vitae a metus').split('').map(d => spriteValues.indexOf(d)));
+    epoch = Date.now();
 
-let audioCtx = null;
-let audioBuffer = null;
-let compressor = null;
-let frameCount = spriteGridArea;
+    modifiedTime = 0;
 
-const d3fcCanvas = document.querySelector('d3fc-canvas');
-d3fcCanvas.addEventListener('draw', () => {
-    const canvas = d3fcCanvas.querySelector('canvas');
-    const ctx = canvas.getContext('webgl');
-    ctx.enable(ctx.CULL_FACE);
-    instance.context(ctx)();
-    // frameCount--;
-});
-
-d3fcCanvas.addEventListener('click', async () => {
-    const response = await fetch('click.wav');
-    const arrayBuffer = await response.arrayBuffer();
-    if (audioCtx == null) {
-        audioCtx = new AudioContext();
-        compressor = audioCtx.createDynamicsCompressor();
-        compressor.connect(audioCtx.destination);
+    constructor() {
+        super();
+        this.d3fcCanvas = document.createElement('d3fc-canvas');
+        Object.assign(this.d3fcCanvas, {
+            setWebglViewport: true,
+            // useDevicePixelRatio: true
+        });
+        Object.assign(this.d3fcCanvas.style, {
+            width: '100%',
+            height: '100%'
+        });
+        this.handleClick = this.handleClick.bind(this);
+        this.d3fcCanvas.addEventListener('click', this.handleClick);
+        this.handleDraw = this.handleDraw.bind(this);
+        this.d3fcCanvas.addEventListener('draw', this.handleDraw);
+        const shadowRoot = this.attachShadow({ mode: 'closed' });
+        const styleElement = document.createElement('style');
+        styleElement.setAttribute('type', 'text/css');
+        styleElement.textContent = css;
+        shadowRoot.appendChild(styleElement);
+        shadowRoot.appendChild(this.d3fcCanvas);
+        this.handleMutation = this.handleMutation.bind(this);
+        const observer = new MutationObserver(this.handleMutation);
+        observer.observe(this, {
+            characterData: true,
+            childList: true,
+            subtree: true
+        });
+        this.createSpriteSheet();
+        this.createSpriteData();
+        this.createWebglProgram();
     }
-    audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
 
-    const [head, ...tail] = instance.data();
-    const data = [...tail, head];
-    instance.data(data.map(d => d[0]));
+    createWebglProgram() {
+        this.program = fc.webglProgramBuilder()
+            .subInstanceCount(vertices.length)
+            .debug(true);
 
-    const histogram = Array.from({ length: spriteGridArea }).fill(0);
-    for (const [current, previous, timestamp] of instance.data()) { //TODO: ignoring timestamp - can we make timestamp global?
-        const delta = (spriteGridArea + (current - previous)) % spriteGridArea;
-        for (let i = 0; i < delta; i++) {
-            histogram[i]++;
+        const rows = this.rows, cols = this.cols;
+        this.program.buffers()
+            .attribute('aTranslate',
+                fc.webglAttribute()
+                    .size(2)
+                    .divisor(1)
+                    .data(
+                        Array.from({ length: rows * cols })
+                            .map((_, i) => [
+                                (((i % cols) + 0.5) / cols) * 2 - 1,
+                                (((Math.floor(i / cols) + 0.5) / rows) * 2 - 1) * -1
+                            ])
+                    )
+            )
+            .attribute('aScale',
+                fc.webglAttribute()
+                    .size(2)
+                    .divisor(1)
+                    .data(Array.from({ length: rows * cols })
+                        .map(() => [
+                            1 / cols,
+                            1 / rows
+                        ]))
+            )
+            .attribute('aVertex',
+                fc.webglAttribute()
+                    .divisor(0)
+                    .size(4)
+                    .data([
+                        // [x, y, y', -1 = next, +1 = current] 
+                        // Current top
+                        [-1, 1, 0, -1],
+                        [-1, 0, 0, -1],
+                        [1, 1, 0, -1],
+                        [1, 1, 0, -1],
+                        [-1, 0, 0, -1],
+                        [1, 0, 0, -1],
+                        // Previous bottom
+                        [-1, 0, 0, 1],
+                        [-1, -1, 0, 1],
+                        [1, 0, 0, 1],
+                        [1, 0, 0, 1],
+                        [-1, -1, 0, 1],
+                        [1, -1, 0, 1],
+                        // Previous top
+                        [-1, 0, 1, 1],
+                        [-1, 0, 0, 1],
+                        [1, 0, 1, 1],
+                        [1, 0, 1, 1],
+                        [-1, 0, 0, 1],
+                        [1, 0, 0, 1],
+                        // Current bottom
+                        [-1, 0, 1, -1],
+                        [1, 0, 1, -1],
+                        [-1, 0, 0, -1],
+                        [1, 0, 1, -1],
+                        [1, 0, 0, -1],
+                        [-1, 0, 0, -1]
+                    ])
+            )
+            .uniform('uSpriteSampler', this.spriteSheetUniform);
+    }
+
+    static get observedAttributes() {
+        return ['characters', 'cols', 'frequency', 'rows'];
+    }
+
+    attributeChangedCallback(name) {
+        switch (name) {
+            case 'characters': {
+                this.createSpriteSheet();
+                break;
+            }
+        }
+        this.d3fcCanvas.requestRedraw();
+        console.log('RESET', this.characters, this.cols, this.frequency, this.rows);
+    }
+
+    async handleClick() {
+        console.log('CLICK');
+        if (this.audioCtx == null) {
+            this.audioCtx = new AudioContext();
+        }
+        this.spriteData = [];
+        this.createSpriteData();
+        this.d3fcCanvas.requestRedraw();
+    }
+
+    connectedCallback() {
+        console.log('CONNECTED')
+        this.d3fcCanvas.requestRedraw();
+    }
+
+    handleDraw() {
+        console.log('DRAW')
+        const canvas = this.d3fcCanvas.querySelector('canvas');
+        const ctx = canvas.getContext('webgl');
+        ctx.enable(ctx.CULL_FACE);
+        this.program.vertexShader(vertexShader)
+            .fragmentShader(fragmentShader)
+            .context(ctx);
+        const characterCount = [...this.characters].length;
+        const currentTime = this.audioCtx == null ? (Date.now() - this.epoch) / 1000 : this.audioCtx.currentTime;
+        this.program.buffers()
+            .attribute(
+                'aSpriteData',
+                fc.webglAttribute()
+                    .size(2)
+                    .divisor(1)
+                    .data(this.spriteData)
+            )
+            .uniform('uCurrentTime', fc.webglUniform(currentTime))
+            .uniform('uModifiedTime', fc.webglUniform(this.modifiedTime))
+            .uniform('uSpriteGridSize', fc.webglUniform(Math.sqrt(characterCount)))
+            .uniform('uSpeed', fc.webglUniform(this.frequency));
+        this.program(this.spriteData.length);
+        // request further redraws if the transition isn't complete
+        const maxDelta = this.spriteData.map(([current, previous]) => (characterCount + (current - previous)) % characterCount)
+            .reduce((a, b) => Math.max(a, b));
+        if (this.modifiedTime + maxDelta / this.frequency > currentTime) {
+            setTimeout(() => this.d3fcCanvas.requestRedraw(), 0);
         }
     }
-    // console.log(histogram);
-    const currentTime = audioCtx.currentTime;
-    console.log(histogram);
-    const mapped = histogram.map(d => Math.ceil(Math.log10(d + 1)));
-    console.log(mapped);
-    mapped.forEach((d, i) => {
-        for (let j = 0; j < d; j++) {
-            const trackSource = audioCtx.createBufferSource();
-            trackSource.buffer = audioBuffer;
-            trackSource.playbackRate.value = speed * 1000; // assumes audio is 1 sec long
-            // const gainNode = audioCtx.createGain();
-            // trackSource.connect(gainNode);
-            // gainNode.gain.value = datum / (rows * columns);
-            // gainNode.connect(compressor);
-            trackSource.connect(compressor);
-            trackSource.start(currentTime + (i) / (speed * 1000));
-        }
-    });
 
-    frameCount = spriteGridArea;
-})
-
-// only need to redraw while dt < spriteValues.length / speed
-setInterval(() => {
-    if (frameCount > 0) {
-        d3fcCanvas.requestRedraw()
+    handleMutation() {
+        console.log('VALUE', this.textContent);
+        this.createSpriteData();
     }
-}, 10);
 
-document.querySelector('#loading').style.display = 'none';
+    createSpriteSheet() {
+        const spriteSize = 128;
+        const canvas = document.createElement('canvas');
+        // document.body.appendChild(canvas)
+        const characters = this.characters;
+        const sheetSize = Math.ceil(Math.sqrt([...characters].length));
+        canvas.width = canvas.height = sheetSize * spriteSize;
+        const context = canvas.getContext('2d');
+        context.fillStyle = 'black';
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        context.font = '100px sans-serif';
+        context.textAlign = 'center';
+        context.textBaseline = 'middle';
+        context.fillStyle = 'white';
+        let i = 0;
+        for (const character of characters) {
+            const x = i % sheetSize;
+            const y = Math.floor(i / sheetSize);
+            context.fillText(character, (x + 0.5) * spriteSize, (y + 0.5) * spriteSize);
+            i += 1
+        }
+        context.fillStyle = 'black';
+        for (let y = 0; y < sheetSize; y++) {
+            context.fillRect(0, y * spriteSize + spriteSize / 2 - spriteSize * 0.025, canvas.width, spriteSize * 0.05);
+        }
+        const imageData = context.getImageData(0, 0, canvas.width, canvas.height).data;
+        this.spriteSheetUniform.data(imageData);
+        this.d3fcCanvas.requestRedraw();
+    }
+
+    createSpriteData() {
+        const previousSpriteData = this.spriteData;
+        const characters = this.characters;
+        const characterCount = [...this.characters].length;
+        let textContent = this.textContent;
+        textContent = textContent.replace(/(^\n|\n\s*$)/gu, '');
+        textContent = textContent.replace(/(.*)\n/gu, (_, line) => {
+            const length = [...line].length;
+            const spillover = length % this.cols;
+            if (length > 0 && spillover === 0) {
+                return line;
+            }
+            const padding = Array.from({ length: this.cols - spillover }).fill(' ').join('');
+            return line + padding;
+        });
+        const textCharacters = [...textContent];
+        this.spriteData = Array.from({ length: this.rows * this.cols })
+            .map((_, i) => {
+                const characterIndex = characters.indexOf(textCharacters[i]);
+                return [
+                    characterIndex > -1 ? characterIndex : 0,
+                    i < previousSpriteData.length ? previousSpriteData[i][0] : 0
+                ];
+            });
+
+        this.modifiedTime = this.audioCtx == null ? (Date.now() - this.epoch) / 1000 : this.audioCtx.currentTime;
+
+        this.createAudioEffects()
+
+        this.d3fcCanvas.requestRedraw();
+    }
+
+    async createAudioEffects() {
+        if (this.audioCtx == null) {
+            return;
+        }
+        if (this.audioDestination == null) {
+            this.audioDestination = this.audioCtx.createDynamicsCompressor();
+            this.audioDestination.connect(this.audioCtx.destination);
+        }
+        if (this.audioBuffer == null) {
+            this.audioBuffer = this.audioCtx.createBuffer(1, 1, 44100);
+            const response = await fetch('click.wav'); // TODO
+            const arrayBuffer = await response.arrayBuffer();
+            this.audioBuffer = await this.audioCtx.decodeAudioData(arrayBuffer);
+        }
+        for (const trackSource of this.audioTrackSources) {
+            trackSource.stop();
+        }
+        this.audioTrackSources.clear()
+        const characterCount = [...this.characters].length;
+        const histogram = Array.from({ length: characterCount }).fill(0);
+        for (const [current, previous] of this.spriteData) {
+            const delta = (characterCount + (current - previous)) % characterCount;
+            for (let i = 0; i < delta; i++) {
+                histogram[i]++;
+            }
+        }
+        const currentTime = this.audioCtx.currentTime;
+        histogram.forEach((d, i) => {
+            const trackCount = Math.round(Math.log2(d + 1));
+            for (let j = 0; j < trackCount; j++) {
+                const trackSource = this.audioCtx.createBufferSource();
+                trackSource.buffer = this.audioBuffer;
+                trackSource.playbackRate.value = trackSource.buffer.duration * this.frequency;
+                trackSource.connect(this.audioDestination);
+                trackSource.start(currentTime + (i + 0.5) / (this.frequency));
+                this.audioTrackSources.add(trackSource);
+            }
+        });
+    }
+
+    static defaultCharacters = ' !"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~';
+
+    get characters() {
+        const attribute = this.getAttribute('characters');
+        const value = attribute == null ? SplitFlapElement.defaultCharacters : attribute;
+        const length = [...value].length;
+        const sqrt = Math.ceil(Math.sqrt(length));
+        const padding = Array.from({ length: sqrt * sqrt - length }).fill(' ').join('');
+        return value + padding;
+    }
+
+    set characters(value) {
+        this.setAttribute('characters', value);
+    }
+
+    get characters() {
+        const attribute = this.getAttribute('characters');
+        const value = attribute == null ? SplitFlapElement.defaultCharacters : attribute;
+        const length = [...value].length;
+        const sqrt = Math.ceil(Math.sqrt(length));
+        const padding = Array.from({ length: sqrt * sqrt - length }).fill(' ').join('');
+        return value + padding;
+    }
+
+    set characters(value) {
+        this.setAttribute('characters', value);
+    }
+
+    static defaultCols = 24;
+
+    get cols() {
+        const attribute = Number.parseInt(this.getAttribute('cols'));
+        return Number.isNaN(attribute) ? SplitFlapElement.defaultCols : attribute;
+    }
+
+    set cols(value) {
+        this.setAttribute('cols', value);
+    }
+
+    static defaultFrequency = 0.1;
+
+    get frequency() {
+        const attribute = Number.parseFloat(this.getAttribute('frequency'));
+        return Number.isNaN(attribute) ? SplitFlapElement.defaultFrequency : attribute;
+    }
+
+    set frequency(value) {
+        this.setAttribute('frequency', value);
+    }
+
+    static defaultRows = 16;
+
+    get rows() {
+        const attribute = Number.parseInt(this.getAttribute('rows'));
+        return Number.isNaN(attribute) ? SplitFlapElement.defaultRows : attribute;
+    }
+
+    set rows(value) {
+        this.setAttribute('rows', value);
+    }
+}
+
+customElements.define('split-flap', SplitFlapElement);

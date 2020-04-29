@@ -88,8 +88,8 @@ void main() {
 export default () => {
     let texture2;
     let spriteGridSize = 10;
-    let rows = 24;
-    let columns = 48;
+    let rows = 12;
+    let columns = 24;
     let speed = 1;
 
     const vertices = [
@@ -197,10 +197,9 @@ export default () => {
 
     let texture = null;
 
-    const start = Date.now();
     let framesRemaining = 0;
 
-    const draw = () => {
+    const draw = (time) => {
         if (framesRemaining === 0) {
             return;
         }
@@ -211,7 +210,7 @@ export default () => {
             .vertexShader(vertexShader)
             .fragmentShader(fragmentShader);
 
-        timeUniform.data(Date.now() - start);
+        timeUniform.data(time);
         speedUniform.data(speed);
 
         {
@@ -252,14 +251,7 @@ export default () => {
 
     draw.data = (...args) => {
         if (args.length > 0) {
-            const previousSpriteData = spriteDataAttribute.data();
-            const now = Date.now() - start;
-            const spriteData = args[0].map((d, i) => [
-                d,
-                i < previousSpriteData.length ? previousSpriteData[i][0] : d,
-                now
-            ]);
-            spriteDataAttribute.data(spriteData);
+            spriteDataAttribute.data(args[0]);
             framesRemaining = spriteGridSize * spriteGridSize * 6;
             return draw;
         }
